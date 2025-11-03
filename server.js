@@ -51,14 +51,12 @@ function gameLoop() {
         const inputs = player.inputs;
         let hasMoved = false;
 
-        // Using Y for 2D
         if (inputs.w) { player.y -= PLAYER_SPEED; hasMoved = true; }
         if (inputs.s) { player.y += PLAYER_SPEED; hasMoved = true; }
         if (inputs.a) { player.x -= PLAYER_SPEED; hasMoved = true; }
         if (inputs.d) { player.x += PLAYER_SPEED; hasMoved = true; }
 
         if (hasMoved) {
-            // New 2D map clamping
             player.x = Math.max(0 + PLAYER_RADIUS, Math.min(MAP_WIDTH - PLAYER_RADIUS, player.x));
             player.y = Math.max(0 + PLAYER_RADIUS, Math.min(MAP_HEIGHT - PLAYER_RADIUS, player.y));
             playerUpdates[id] = player;
@@ -72,7 +70,6 @@ function gameLoop() {
         bullet.x += bullet.dx * BULLET_SPEED;
         bullet.y += bullet.dy * BULLET_SPEED;
 
-        // 2D map edge check
         if (bullet.x < 0 || bullet.x > MAP_WIDTH || bullet.y < 0 || bullet.y > MAP_HEIGHT) {
             removedBullets.push(id);
         }
@@ -125,24 +122,35 @@ function gameLoop() {
 // ------------------------------
 // SOCKET.IO HANDLING
 // ------------------------------
+
+// --- THIS ENTIRE FUNCTION IS UPDATED ---
 io.on('connection', (socket) => {
     console.log('Player connected:', socket.id);
 
     const newPlayer = {
         id: socket.id,
-        x: MAP_WIDTH / 2, // Start in center
+        x: MAP_WIDTH / 2, 
         y: MAP_HEIGHT / 2,
-        // --- THIS IS THE FIX ---
-        color: Math.floor(Math.random() * 0xffffff), // Send a whole integer
+        color: Math.floor(Math.random() * 0xffffff), // Fixed color bug
         hp: PLAYER_MAX_HP,
         maxHp: PLAYER_MAX_HP,
         inputs: { w: false, a: false, s: false, d: false }
     };
     
+    // 1. Add new player to the main game state *immediately*
     gameState.players[socket.id] = newPlayer;
-    newPlayers[socket.id] = newPlayer;
 
-    socket.emit('init', socket.id);
+    // 2. Send the new player their ID AND the *entire* list of players
+    //    (including themselves) so they can spawn everyone.
+    socket.emit('init', { 
+        id: socket.id, 
+        existingPlayers: gameState.players 
+    });
+    
+    // 3. Add the player to the 'newPlayers' delta list.
+    //    This is so *other* players (who are already connected)
+    //    get a 'delta.new' message and spawn this new player.
+    newPlayers[socket.id] = newPlayer;
 
     socket.on('inputs', (inputs) => {
         const player = gameState.players[socket.id];
@@ -151,7 +159,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Use targetX/Y and startX/Y
     socket.on('shoot', (shootData) => {
         const player = gameState.players[socket.id];
         if (!player || player.hp <= 0) return;
@@ -166,7 +173,8 @@ io.on('connection', (socket) => {
         const bullet = {
             id: bulletIdCounter++,
             ownerId: socket.id,
-            x: startX, S            y: startY,
+            x: startX, 
+            y: startY,
             dx: dx / mag,
             dy: dy / mag,
             color: player.color
