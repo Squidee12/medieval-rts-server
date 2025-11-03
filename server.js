@@ -13,19 +13,19 @@ const io = socketIo(server, {
     }
 });
 
-app.use(express.static(__dirname));
 const PORT = process.env.PORT || 3000;
 
 // ------------------------------
-// GAME CONSTANTS
+// GAME CONSTANTS (NEW 2D-friendly values)
 // ------------------------------
-const PLAYER_SPEED = 0.1;
-const PLAYER_RADIUS = 0.5;
+const MAP_WIDTH = 800;
+const MAP_HEIGHT = 600;
+const PLAYER_SPEED = 3;
+const PLAYER_RADIUS = 10;
 const PLAYER_MAX_HP = 100;
-const BULLET_SPEED = 0.3;
-const BULLET_RADIUS = 0.1;
+const BULLET_SPEED = 7;
+const BULLET_RADIUS = 3;
 const BULLET_DAMAGE = 10;
-const MAP_SIZE = 25; 
 
 // ------------------------------
 // GAME STATE
@@ -35,8 +35,6 @@ let gameState = {
     bullets: {}
 };
 let bulletIdCounter = 0;
-
-// --- Delta Update Trackers ---
 let newPlayers = {};
 let removedPlayers = [];
 
@@ -53,14 +51,16 @@ function gameLoop() {
         const inputs = player.inputs;
         let hasMoved = false;
 
-        if (inputs.w) { player.z -= PLAYER_SPEED; hasMoved = true; }
-        if (inputs.s) { player.z += PLAYER_SPEED; hasMoved = true; }
+        // Using Y for 2D
+        if (inputs.w) { player.y -= PLAYER_SPEED; hasMoved = true; }
+        if (inputs.s) { player.y += PLAYER_SPEED; hasMoved = true; }
         if (inputs.a) { player.x -= PLAYER_SPEED; hasMoved = true; }
         if (inputs.d) { player.x += PLAYER_SPEED; hasMoved = true; }
 
         if (hasMoved) {
-            player.x = Math.max(-MAP_SIZE, Math.min(MAP_SIZE, player.x));
-            player.z = Math.max(-MAP_SIZE, Math.min(MAP_SIZE, player.z));
+            // New 2D map clamping
+            player.x = Math.max(0 + PLAYER_RADIUS, Math.min(MAP_WIDTH - PLAYER_RADIUS, player.x));
+            player.y = Math.max(0 + PLAYER_RADIUS, Math.min(MAP_HEIGHT - PLAYER_RADIUS, player.y));
             playerUpdates[id] = player;
         }
     }
@@ -70,9 +70,10 @@ function gameLoop() {
     for (const id in gameState.bullets) {
         const bullet = gameState.bullets[id];
         bullet.x += bullet.dx * BULLET_SPEED;
-        bullet.z += bullet.dz * BULLET_SPEED;
+        bullet.y += bullet.dy * BULLET_SPEED;
 
-        if (bullet.x > MAP_SIZE || bullet.x < -MAP_SIZE || bullet.z > MAP_SIZE || bullet.z < -MAP_SIZE) {
+        // 2D map edge check
+        if (bullet.x < 0 || bullet.x > MAP_WIDTH || bullet.y < 0 || bullet.y > MAP_HEIGHT) {
             removedBullets.push(id);
         }
     }
@@ -86,15 +87,15 @@ function gameLoop() {
             const player = gameState.players[playerId];
             if (bullet.ownerId === playerId) continue;
 
-            const dist = Math.sqrt((bullet.x - player.x) ** 2 + (bullet.z - player.z) ** 2);
+            const dist = Math.sqrt((bullet.x - player.x) ** 2 + (bullet.y - player.y) ** 2);
             if (dist < PLAYER_RADIUS + BULLET_RADIUS) {
                 player.hp -= BULLET_DAMAGE;
                 removedBullets.push(bulletId); 
 
                 if (player.hp <= 0) {
                     player.hp = PLAYER_MAX_HP;
-                    player.x = (Math.random() - 0.5) * 20;
-                    player.z = (Math.random() - 0.5) * 20;
+                    player.x = MAP_WIDTH / 2 + (Math.random() - 0.5) * 100;
+                    player.y = MAP_HEIGHT / 2 + (Math.random() - 0.5) * 100;
                 }
                 
                 playerUpdates[playerId] = player; 
@@ -103,7 +104,6 @@ function gameLoop() {
         }
     }
     
-    // 4. Clean up removed bullets
     for (const id of removedBullets) {
         delete gameState.bullets[id];
     }
@@ -128,12 +128,11 @@ function gameLoop() {
 io.on('connection', (socket) => {
     console.log('Player connected:', socket.id);
 
-    // Create a new player object
     const newPlayer = {
         id: socket.id,
-        x: (Math.random() - 0.5) * 20,
-        z: (Math.random() - 0.5) * 20,
-        color: Math.random() * 0xffffff,
+        x: MAP_WIDTH / 2, // Start in center
+        y: MAP_HEIGHT / 2,
+        color: Math.random() * 0xffffff, // Still send a hex number
         hp: PLAYER_MAX_HP,
         maxHp: PLAYER_MAX_HP,
         inputs: { w: false, a: false, s: false, d: false }
@@ -144,7 +143,6 @@ io.on('connection', (socket) => {
 
     socket.emit('init', socket.id);
 
-    // Handle player inputs
     socket.on('inputs', (inputs) => {
         const player = gameState.players[socket.id];
         if (player) {
@@ -152,33 +150,30 @@ io.on('connection', (socket) => {
         }
     });
 
-    // --- UPDATED 'shoot' HANDLER ---
+    // Use targetX/Y and startX/Y
     socket.on('shoot', (shootData) => {
         const player = gameState.players[socket.id];
-        if (!player || player.hp <= 0) return; // Can't shoot if dead
+        if (!player || player.hp <= 0) return;
 
-        // We now trust the client's start position for visual smoothness.
         const startX = shootData.startX;
-        const startZ = shootData.startZ;
+        const startY = shootData.startY;
 
-        // Calculate direction vector
         const dx = shootData.targetX - startX;
-        const dz = shootData.targetZ - startZ;
-        const mag = Math.sqrt(dx * dx + dz * dz);
+        const dy = shootData.targetY - startY;
+        const mag = Math.sqrt(dx * dx + dy * dy);
         
         const bullet = {
             id: bulletIdCounter++,
             ownerId: socket.id,
-            x: startX, // Use the client's provided start position
-            z: startZ, // Use the client's provided start position
+            x: startX, 
+            y: startY,
             dx: dx / mag,
-            dz: dz / mag,
+            dy: dy / mag,
             color: player.color
         };
         gameState.bullets[bullet.id] = bullet;
     });
 
-    // Handle disconnection
     socket.on('disconnect', () => {
         console.log('Player disconnected:', socket.id);
         removedPlayers.push(socket.id);
@@ -186,7 +181,6 @@ io.on('connection', (socket) => {
     });
 });
 
-// Start the server and game loop
 server.listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);
     setInterval(gameLoop, 1000 / 60); // 60 updates per second

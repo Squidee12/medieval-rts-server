@@ -1,7 +1,7 @@
 {
-  "name": "shooter-server",
+  "name": "shooter-server-2d",
   "version": "1.0.0",
-  "description": "Simple 1v1 Shooter Server",
+  "description": "2D Shooter Server",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
