@@ -1,7 +1,7 @@
 {
-  "name": "shooter-server-2d",
+  "name": "advanced-shooter-server",
   "version": "1.0.0",
-  "description": "2D Shooter Server",
+  "description": "2D Shooter Server with Abilities",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
