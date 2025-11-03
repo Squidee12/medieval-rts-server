@@ -1,6 +1,3 @@
-// ------------------------------
-// SERVER SETUP
-// ------------------------------
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
@@ -13,277 +10,257 @@ const io = socketIo(server, {
 
 const PORT = process.env.PORT || 3000;
 
-// ------------------------------
-// GAME CONSTANTS
-// ------------------------------
-const MAP_WIDTH = 800;
-const MAP_HEIGHT = 600;
-const PLAYER_RADIUS = 10;
-const PLAYER_MAX_HP = 100;
+// --- Game Data ---
+const WORDS_LIST = [
+    "Dog", "Cat", "Sun", "Tree", "House", "Car", "Bicycle", "Computer",
+    "Phone", "Guitar", "Pizza", "Apple", "Banana", "Book", "Chair",
+    "Bridge", "Mountain", "River", "Star", "Moon", "Boat", "Train"
+];
+const ROUND_TIME = 90;
+const GET_READY_TIME = 5;
+const MAX_ROUNDS = 10;
+const HINT_INTERVAL = 30; // <-- NEW: Show hint every 30 seconds
 
-// -- Physics & Combat --
-const PLAYER_SPEED = 2;
-const DASH_SPEED = 8;
-const DASH_DURATION = 0.2; // seconds
-const DASH_COOLDOWN = 3;   // seconds
-
-const BULLET_SPEED = 7;
-const BULLET_RADIUS = 3;
-const GUN_DAMAGE = 10;
-const GUN_COOLDOWN = 0.3; // seconds
-
-const MELEE_DAMAGE = 25;
-const MELEE_RANGE = 25;    // pixels
-const MELEE_ARC = Math.PI / 2; // 90-degree arc
-const MELEE_COOLDOWN = 0.8; // seconds
-
-const TICK_RATE = 1000 / 60; // 60 updates per second
-
-// ------------------------------
-// GAME STATE
-// ------------------------------
+// --- Game State ---
 let gameState = {
     players: {},
-    bullets: {}
+    currentDrawerId: null,
+    currentWord: "",
+    wordHint: "", // <-- NEW: The underscore hint string
+    timer: ROUND_TIME,
+    isRoundActive: false,
+    currentRound: 0
 };
-let bulletIdCounter = 0;
-let newPlayers = {};
-let removedPlayers = [];
+let gameTimer = null; 
 
-// ------------------------------
-// SERVER GAME LOOP
-// ------------------------------
-function gameLoop() {
-    
-    let playerUpdates = {}; // The "delta" for player states
+// --- Helper Functions ---
 
-    // 1. Update Cooldowns and States
-    for (const id in gameState.players) {
-        const player = gameState.players[id];
-        let stateChanged = false;
-
-        // Tick down cooldowns
-        if (player.dashCooldown > 0) player.dashCooldown -= (TICK_RATE / 1000);
-        if (player.gunCooldown > 0) player.gunCooldown -= (TICK_RATE / 1000);
-        if (player.meleeCooldown > 0) player.meleeCooldown -= (TICK_RATE / 1000);
-
-        // Update dash state
-        if (player.isDashing) {
-            player.dashTimer -= (TICK_RATE / 1000);
-            if (player.dashTimer <= 0) {
-                player.isDashing = false;
-                stateChanged = true;
-            }
-        }
-        
-        // 2. Update Player Positions
-        const currentSpeed = player.isDashing ? DASH_SPEED : PLAYER_SPEED;
-        const inputs = player.inputs;
-        let hasMoved = false;
-
-        if (inputs.w) { player.y -= currentSpeed; hasMoved = true; }
-        if (inputs.s) { player.y += currentSpeed; hasMoved = true; }
-        if (inputs.a) { player.x -= currentSpeed; hasMoved = true; }
-        if (inputs.d) { player.x += currentSpeed; hasMoved = true; }
-
-        if (hasMoved) {
-            player.x = Math.max(0 + PLAYER_RADIUS, Math.min(MAP_WIDTH - PLAYER_RADIUS, player.x));
-            player.y = Math.max(0 + PLAYER_RADIUS, Math.min(MAP_HEIGHT - PLAYER_RADIUS, player.y));
-        }
-
-        // Add to delta if moved, changed state, or has active cooldowns
-        if (hasMoved || stateChanged || player.isDashing || 
-            player.dashCooldown > 0 || player.gunCooldown > 0 || player.meleeCooldown > 0) {
-            playerUpdates[id] = player;
-        }
-    }
-
-    // 3. Update Bullet Positions & Check Hits
-    let removedBullets = []; 
-    for (const id in gameState.bullets) {
-        const bullet = gameState.bullets[id];
-        bullet.x += bullet.dx * BULLET_SPEED;
-        bullet.y += bullet.dy * BULLET_SPEED;
-
-        // Check map boundary
-        if (bullet.x < 0 || bullet.x > MAP_WIDTH || bullet.y < 0 || bullet.y > MAP_HEIGHT) {
-            removedBullets.push(id);
-            continue;
-        }
-
-        // Check collision with players
-        for (const playerId in gameState.players) {
-            const player = gameState.players[playerId];
-            if (bullet.ownerId === playerId) continue; // Don't shoot self
-
-            const dist = Math.sqrt((bullet.x - player.x) ** 2 + (bullet.y - player.y) ** 2);
-            if (dist < PLAYER_RADIUS + BULLET_RADIUS) {
-                player.hp -= GUN_DAMAGE;
-                removedBullets.push(id); 
-
-                if (player.hp <= 0) {
-                    // Player died - reset them
-                    player.hp = PLAYER_MAX_HP;
-                    player.x = MAP_WIDTH / 2 + (Math.random() - 0.5) * 100;
-                    player.y = MAP_HEIGHT / 2 + (Math.random() - 0.5) * 100;
-                }
-                
-                playerUpdates[playerId] = player; // Add to delta
-                break; 
-            }
-        }
-    }
-    for (const id of removedBullets) {
-        delete gameState.bullets[id];
-    }
-
-    // 4. Construct and broadcast the delta
-    const delta = {
-        updates: playerUpdates,  
-        new: newPlayers,           
-        removed: removedPlayers,   
-        bullets: gameState.bullets // Bullets are simple, send all
-    };
-    io.emit('stateUpdate', delta);
-    
-    newPlayers = {};
-    removedPlayers = [];
+function getNextDrawerId() {
+    const playerIds = Object.keys(gameState.players);
+    if (playerIds.length === 0) return null;
+    if (!gameState.currentDrawerId) return playerIds[0];
+    const currentIndex = playerIds.indexOf(gameState.currentDrawerId);
+    const nextIndex = (currentIndex + 1) % playerIds.length;
+    return playerIds[nextIndex];
 }
 
-// ------------------------------
-// SOCKET.IO HANDLING
-// ------------------------------
+function endGame() {
+    if (gameTimer) clearInterval(gameTimer);
+    gameState.isRoundActive = false;
+    gameState.currentRound = 0;
+
+    let winner = null;
+    let maxScore = -1;
+    for (const id in gameState.players) {
+        const player = gameState.players[id];
+        if (player.score > maxScore) {
+            maxScore = player.score;
+            winner = player;
+        }
+        player.score = 0; 
+    }
+
+    io.emit('game_over', {
+        winnerName: winner ? winner.username : "Everyone",
+        score: maxScore
+    });
+    io.emit('player_list_update', gameState.players);
+    
+    setTimeout(startNewRound, 10000);
+}
+
+// --- NEW: Hint Function ---
+function revealHint() {
+    if (!gameState.isRoundActive) return;
+
+    // Find an index of a letter that is still an underscore
+    const hiddenIndices = [];
+    for (let i = 0; i < gameState.wordHint.length; i++) {
+        if (gameState.wordHint[i] === '_') {
+            hiddenIndices.push(i);
+        }
+    }
+
+    if (hiddenIndices.length <= 1) return; // Don't reveal the last letter
+
+    const revealIndex = hiddenIndices[Math.floor(Math.random() * hiddenIndices.length)];
+    const word = gameState.currentWord;
+    
+    // Rebuild the hint string
+    let hintChars = gameState.wordHint.split(' ');
+    hintChars[revealIndex] = word[revealIndex];
+    gameState.wordHint = hintChars.join(' ');
+
+    io.emit('word_hint', { underscores: gameState.wordHint });
+}
+
+
+function startNewRound() {
+    if (gameTimer) clearInterval(gameTimer);
+    
+    const playerIds = Object.keys(gameState.players);
+    if (playerIds.length < 2) {
+        gameState.isRoundActive = false;
+        io.emit('game_update', { message: "Waiting for players..." });
+        return;
+    }
+
+    if (gameState.currentRound >= MAX_ROUNDS) {
+        endGame();
+        return;
+    }
+    
+    gameState.currentRound++;
+    gameState.isRoundActive = false; 
+    gameState.currentDrawerId = getNextDrawerId();
+    gameState.currentWord = WORDS_LIST[Math.floor(Math.random() * WORDS_LIST.length)];
+    gameState.timer = ROUND_TIME;
+    gameState.wordHint = gameState.currentWord.replace(/./g, "_"); // <-- NEW
+    // Add spaces for display
+    gameState.wordHint = gameState.wordHint.split('').join(' ');
+
+
+    console.log(`Round ${gameState.currentRound}/${MAX_ROUNDS}. Drawer: ${gameState.currentDrawerId}, Word: ${gameState.currentWord}`);
+
+    io.emit('get_ready', { 
+        timer: GET_READY_TIME, 
+        round: gameState.currentRound,
+        maxRounds: MAX_ROUNDS
+    });
+
+    setTimeout(() => {
+        gameState.isRoundActive = true;
+        
+        io.emit('new_round', {
+            drawerId: gameState.currentDrawerId,
+            drawerName: gameState.players[gameState.currentDrawerId].username,
+            timer: gameState.timer
+        });
+
+        io.to(gameState.currentDrawerId).emit('your_word', {
+            word: gameState.currentWord,
+            underscores: gameState.wordHint
+        });
+        
+        io.to(gameState.currentDrawerId).broadcast.emit('word_hint', {
+            underscores: gameState.wordHint
+        });
+        
+        gameTimer = setInterval(() => {
+            gameState.timer--;
+            io.emit('timer_update', { timer: gameState.timer });
+
+            // --- NEW: Check if it's time for a hint ---
+            if ((ROUND_TIME - gameState.timer) % HINT_INTERVAL === 0 && gameState.timer > 0) {
+                revealHint();
+            }
+
+            if (gameState.timer <= 0) {
+                io.emit('system_message', { 
+                    message: `Time's up! The word was "${gameState.currentWord}".`,
+                    color: '#FF8C00' 
+                });
+                startNewRound();
+            }
+        }, 1000);
+    }, GET_READY_TIME * 1000);
+}
+
+// --- Socket.IO Handling ---
 io.on('connection', (socket) => {
     console.log('Player connected:', socket.id);
 
-    const newPlayer = {
-        id: socket.id,
-        x: MAP_WIDTH / 2, 
-        y: MAP_HEIGHT / 2,
-        targetX: MAP_WIDTH / 2, // Mouse position
-        targetY: MAP_HEIGHT / 2,
-        color: Math.floor(Math.random() * 0xffffff),
-        hp: PLAYER_MAX_HP,
-        maxHp: PLAYER_MAX_HP,
-        inputs: { w: false, a: false, s: false, d: false },
-        isDashing: false,
-        dashTimer: 0,
-        dashCooldown: 0,
-        gunCooldown: 0,
-        meleeCooldown: 0
+    gameState.players[socket.id] = {
+        username: `Player ${Math.floor(Math.random() * 1000)}`,
+        score: 0
     };
+    const newPlayer = gameState.players[socket.id];
     
-    gameState.players[socket.id] = newPlayer;
-
-    // Send the new player their ID AND the *entire* list of players
-    socket.emit('init', { 
-        id: socket.id, 
-        existingPlayers: gameState.players 
+    socket.emit('init', {
+        id: socket.id,
+        gameState: gameState 
     });
-    
-    // Tell all *other* players that this player joined
-    newPlayers[socket.id] = newPlayer;
 
-    // Handle player movement
-    socket.on('inputs', (inputs) => {
+    io.emit('system_message', { 
+        message: `${newPlayer.username} has joined.`,
+        color: '#00FF00' 
+    });
+    io.emit('player_list_update', gameState.players);
+
+    if (Object.keys(gameState.players).length === 2 && !gameState.isRoundActive && gameState.currentRound === 0) {
+        startNewRound();
+    }
+
+    // Handle player disconnect
+    socket.on('disconnect', () => {
+        console.log('Player disconnected:', socket.id);
         const player = gameState.players[socket.id];
         if (player) {
-            player.inputs = inputs;
-        }
-    });
+            io.emit('system_message', { 
+                message: `${player.username} has left.`,
+                color: '#FF0000' 
+            });
+            delete gameState.players[socket.id];
+            io.emit('player_list_update', gameState.players);
 
-    // Handle mouse direction (for facing)
-    socket.on('mouse_move', (data) => {
-        const player = gameState.players[socket.id];
-        if (player) {
-            player.targetX = data.x;
-            player.targetY = data.y;
-        }
-    });
-
-    // Handle Dash Ability
-    socket.on('dash', () => {
-        const player = gameState.players[socket.id];
-        if (player && player.dashCooldown <= 0) {
-            player.isDashing = true;
-            player.dashTimer = DASH_DURATION;
-            player.dashCooldown = DASH_COOLDOWN;
-            // Add to delta so client sees state change
-            playerUpdates[player.id] = player; 
-        }
-    });
-
-    // Handle all attacks (Gun, Sword, etc.)
-    socket.on('attack', (attackData) => {
-        const player = gameState.players[socket.id];
-        if (!player) return;
-
-        if (attackData.type === 'gun' && player.gunCooldown <= 0) {
-            player.gunCooldown = GUN_COOLDOWN;
-            
-            const dx = attackData.targetX - player.x;
-            const dy = attackData.targetY - player.y;
-            const mag = Math.sqrt(dx * dx + dy * dy);
-            
-            const bullet = {
-                id: bulletIdCounter++,
-                ownerId: socket.id,
-                x: player.x, 
-                y: player.y,
-                dx: dx / mag,
-                dy: dy / mag,
-                color: player.color
-            };
-            gameState.bullets[bullet.id] = bullet;
-        }
-
-        if (attackData.type === 'sword' && player.meleeCooldown <= 0) {
-            player.meleeCooldown = MELEE_COOLDOWN;
-            
-            // Get player's facing angle
-            const faceDX = player.targetX - player.x;
-            const faceDY = player.targetY - player.y;
-            const faceAngle = Math.atan2(faceDY, faceDX);
-
-            // Check for hits
-            for (const id in gameState.players) {
-                if (id === socket.id) continue; // Can't hit self
-                
-                const target = gameState.players[id];
-                const dist = Math.sqrt((target.x - player.x)**2 + (target.y - player.y)**2);
-
-                if (dist < (PLAYER_RADIUS + MELEE_RANGE)) {
-                    // Check if target is in the attack arc
-                    const angleToTarget = Math.atan2(target.y - player.y, target.x - player.x);
-                    let angleDiff = faceAngle - angleToTarget;
-                    
-                    // Normalize angle diff
-                    while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
-                    while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
-
-                    if (Math.abs(angleDiff) < MELEE_ARC / 2) {
-                        // HIT!
-                        target.hp -= MELEE_DAMAGE;
-                        if (target.hp <= 0) {
-                            target.hp = PLAYER_MAX_HP;
-                            target.x = MAP_WIDTH / 2;
-                            target.y = MAP_HEIGHT / 2;
-                        }
-                        playerUpdates[id] = target; // Add to delta
-                    }
-                }
+            if (Object.keys(gameState.players).length < 2) {
+                if (gameTimer) clearInterval(gameTimer);
+                gameState.isRoundActive = false;
+                gameState.currentRound = 0;
+                io.emit('game_update', { message: "Waiting for players..." });
+            } else if (socket.id === gameState.currentDrawerId) {
+                io.emit('system_message', { 
+                    message: `The drawer left! Starting a new round.`,
+                    color: '#FF8C00' 
+                });
+                startNewRound();
             }
         }
     });
 
-    socket.on('disconnect', () => {
-        console.log('Player disconnected:', socket.id);
-        removedPlayers.push(socket.id);
-        delete gameState.players[socket.id];
+    // Handle chat messages
+    socket.on('chat_message', (data) => {
+        const player = gameState.players[socket.id];
+        if (!player) return;
+        
+        if (gameState.isRoundActive && socket.id !== gameState.currentDrawerId &&
+            data.message.toLowerCase() === gameState.currentWord.toLowerCase()) {
+            
+            // --- NEW: Speed-based Scoring ---
+            const points = 5 + Math.floor(gameState.timer / (ROUND_TIME / 10)); // Base 5 pts, +10 for fast
+            player.score += points;
+            gameState.players[gameState.currentDrawerId].score += 5; // Drawer gets 5
+            
+            io.emit('system_message', { 
+                message: `${player.username} guessed the word! (+${points} pts)`,
+                color: '#00FFFF' 
+            });
+            io.emit('player_list_update', gameState.players);
+            startNewRound();
+
+        } else {
+            io.emit('new_message', {
+                username: player.username,
+                message: data.message
+            });
+        }
+    });
+
+    // Handle drawing data
+    socket.on('draw', (data) => {
+        if (socket.id === gameState.currentDrawerId) {
+            socket.broadcast.emit('drawing', data);
+        }
+    });
+    
+    // Handle clear canvas
+    socket.on('clear_canvas', () => {
+        if (socket.id === gameState.currentDrawerId) {
+            io.emit('clear_canvas');
+        }
     });
 });
 
 server.listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);
-    setInterval(gameLoop, TICK_RATE);
 });
