@@ -132,7 +132,8 @@ io.on('connection', (socket) => {
         id: socket.id,
         x: MAP_WIDTH / 2, // Start in center
         y: MAP_HEIGHT / 2,
-        color: Math.random() * 0xffffff, // Still send a hex number
+        // --- THIS IS THE FIX ---
+        color: Math.floor(Math.random() * 0xffffff), // Send a whole integer
         hp: PLAYER_MAX_HP,
         maxHp: PLAYER_MAX_HP,
         inputs: { w: false, a: false, s: false, d: false }
@@ -165,8 +166,7 @@ io.on('connection', (socket) => {
         const bullet = {
             id: bulletIdCounter++,
             ownerId: socket.id,
-            x: startX, 
-            y: startY,
+            x: startX, S            y: startY,
             dx: dx / mag,
             dy: dy / mag,
             color: player.color
