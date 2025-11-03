@@ -36,7 +36,7 @@ let gameState = {
 };
 let bulletIdCounter = 0;
 
-// --- NEW: Delta Update Trackers ---
+// --- Delta Update Trackers ---
 let newPlayers = {};
 let removedPlayers = [];
 
@@ -45,7 +45,6 @@ let removedPlayers = [];
 // ------------------------------
 function gameLoop() {
     
-    // --- NEW: This object will hold *only* what changed ---
     let playerUpdates = {};
 
     // 1. Update Player Positions
@@ -60,23 +59,19 @@ function gameLoop() {
         if (inputs.d) { player.x += PLAYER_SPEED; hasMoved = true; }
 
         if (hasMoved) {
-            // Clamp to map boundaries
             player.x = Math.max(-MAP_SIZE, Math.min(MAP_SIZE, player.x));
             player.z = Math.max(-MAP_SIZE, Math.min(MAP_SIZE, player.z));
-            
-            // Add to the delta update
             playerUpdates[id] = player;
         }
     }
 
     // 2. Update Bullet Positions
-    let removedBullets = []; // Bullets to remove this frame
+    let removedBullets = []; 
     for (const id in gameState.bullets) {
         const bullet = gameState.bullets[id];
         bullet.x += bullet.dx * BULLET_SPEED;
         bullet.z += bullet.dz * BULLET_SPEED;
 
-        // Remove bullets at map edge
         if (bullet.x > MAP_SIZE || bullet.x < -MAP_SIZE || bullet.z > MAP_SIZE || bullet.z < -MAP_SIZE) {
             removedBullets.push(id);
         }
@@ -84,7 +79,7 @@ function gameLoop() {
 
     // 3. Check Collisions
     for (const bulletId in gameState.bullets) {
-        if (removedBullets.includes(bulletId)) continue; // Skip bullets already marked for removal
+        if (removedBullets.includes(bulletId)) continue; 
 
         const bullet = gameState.bullets[bulletId];
         for (const playerId in gameState.players) {
@@ -93,40 +88,36 @@ function gameLoop() {
 
             const dist = Math.sqrt((bullet.x - player.x) ** 2 + (bullet.z - player.z) ** 2);
             if (dist < PLAYER_RADIUS + BULLET_RADIUS) {
-                // Hit!
                 player.hp -= BULLET_DAMAGE;
-                removedBullets.push(bulletId); // Mark bullet for removal
+                removedBullets.push(bulletId); 
 
                 if (player.hp <= 0) {
-                    // Player died - reset them
                     player.hp = PLAYER_MAX_HP;
                     player.x = (Math.random() - 0.5) * 20;
                     player.z = (Math.random() - 0.5) * 20;
                 }
                 
-                // --- NEW: Add player to delta because their HP changed ---
                 playerUpdates[playerId] = player; 
                 break; 
             }
         }
     }
     
-    // 4. Clean up removed bullets from main state
+    // 4. Clean up removed bullets
     for (const id of removedBullets) {
         delete gameState.bullets[id];
     }
 
-    // 5. --- NEW: Construct and broadcast the delta ---
+    // 5. Construct and broadcast the delta
     const delta = {
-        updates: playerUpdates,  // Players who moved or took damage
-        new: newPlayers,           // Players who just joined
-        removed: removedPlayers,   // Players who just left
-        bullets: gameState.bullets // Send all bullets (simpler)
+        updates: playerUpdates,  
+        new: newPlayers,           
+        removed: removedPlayers,   
+        bullets: gameState.bullets 
     };
 
     io.emit('stateUpdate', delta);
     
-    // --- NEW: Clear the new/removed trackers ---
     newPlayers = {};
     removedPlayers = [];
 }
@@ -149,11 +140,8 @@ io.on('connection', (socket) => {
     };
     
     gameState.players[socket.id] = newPlayer;
-    
-    // --- NEW: Add to newPlayers list for delta ---
     newPlayers[socket.id] = newPlayer;
 
-    // Send the new player their ID
     socket.emit('init', socket.id);
 
     // Handle player inputs
@@ -164,33 +152,35 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Handle shooting
-    socket.on('shoot', (target) => {
+    // --- UPDATED 'shoot' HANDLER ---
+    socket.on('shoot', (shootData) => {
         const player = gameState.players[socket.id];
-        if (!player || player.hp <= 0) return;
+        if (!player || player.hp <= 0) return; // Can't shoot if dead
 
-        const dx = target.x - player.x;
-        const dz = target.z - player.z;
+        // We now trust the client's start position for visual smoothness.
+        const startX = shootData.startX;
+        const startZ = shootData.startZ;
+
+        // Calculate direction vector
+        const dx = shootData.targetX - startX;
+        const dz = shootData.targetZ - startZ;
         const mag = Math.sqrt(dx * dx + dz * dz);
         
         const bullet = {
             id: bulletIdCounter++,
             ownerId: socket.id,
-            x: player.x,
-            z: player.z,
+            x: startX, // Use the client's provided start position
+            z: startZ, // Use the client's provided start position
             dx: dx / mag,
             dz: dz / mag,
             color: player.color
         };
         gameState.bullets[bullet.id] = bullet;
-        // Note: The client will receive this in the next `delta.bullets` update
     });
 
     // Handle disconnection
     socket.on('disconnect', () => {
         console.log('Player disconnected:', socket.id);
-        
-        // --- NEW: Add to removedPlayers list for delta ---
         removedPlayers.push(socket.id);
         delete gameState.players[socket.id];
     });
